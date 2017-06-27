@@ -347,6 +347,16 @@ func UploadFWFile(c *gin.Context) {
 		return
 	}
 
+	if err != nil {
+		fmt.Printf("err opening file: %s", err)
+	}
+
+	if os.MkdirAll("./tmp", 0755) != nil {
+
+		panic("Unable to create directory for tagfile!")
+
+	}
+
 	versionName := c.Request.FormValue("versionName")
 	if versionName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
