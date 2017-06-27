@@ -15,6 +15,8 @@ import (
 
 	"strconv"
 
+	"database/sql"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awsutil"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -50,6 +52,14 @@ type AwsConfiguration struct {
 	Region          string
 	AccessKey       string
 	SecretAccessKey string
+}
+
+type FwFile struct {
+	ID           int64
+	Version      string
+	FileName     string
+	FileURL      string
+	UploadedDate time.Time
 }
 
 var awsConfig AwsConfiguration
@@ -147,6 +157,7 @@ func main() {
 
 		r.POST("/v1/user/avatar/upload", UploadAvatar)
 		r.POST("/v1/user/avatar/uploadKid", UploadKidAvatar)
+		r.POST("/v1/admin/fwFile", UploadFWFile)
 
 		if c.Bool("debug") {
 			return r.Run(":8112")
@@ -215,7 +226,7 @@ func UploadAvatar(c *gin.Context) {
 		log.Println(err)
 	}
 
-	if err = UploadFileToS3(f, fileName); err == nil {
+	if err = UploadFileToS3(f, fmt.Sprintf("/userProfile/%s", fileName)); err == nil {
 		db := database.NewDatabase()
 		defer db.Close()
 
@@ -311,7 +322,7 @@ func UploadKidAvatar(c *gin.Context) {
 	if err != nil {
 		log.Println(err)
 	}
-	if UploadFileToS3(f, fileName) == nil {
+	if UploadFileToS3(f, fmt.Sprintf("/userProfile/%s", fileName)) == nil {
 
 		_, err := db.Exec("UPDATE kids SET profile = ? WHERE id = ?", fileName, kidID)
 
@@ -326,7 +337,84 @@ func UploadKidAvatar(c *gin.Context) {
 
 }
 
-func UploadFileToS3(file *os.File, fileName string) error {
+func UploadFWFile(c *gin.Context) {
+	file, fileHeader, err := c.Request.FormFile("upload")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "upload parameter is required",
+			"error":   err,
+		})
+		return
+	}
+
+	versionName := c.Request.FormValue("versionName")
+	if versionName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Version name is required",
+			"error":   err,
+		})
+		return
+	}
+
+	db := database.NewDatabase()
+	defer db.Close()
+
+	var fwFile FwFile
+
+	if err := db.Get(&fwFile, "SELECT * FROM fw_file WHERE version_name = ?", versionName); err != nil {
+		if err != sql.ErrNoRows {
+			fmt.Println(err)
+		}
+	}
+
+	if fwFile.ID != 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Version name exists",
+			"error":   err,
+		})
+		return
+	}
+
+	fileName := fmt.Sprintf("./tmp/%s.%s", versionName, "hex")
+	out, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0755)
+	if err != nil {
+		log.Println(err)
+	}
+	defer out.Close()
+	_, err = io.Copy(out, file)
+	if err != nil {
+		log.Println(err)
+	}
+
+	f, err := os.Open(fileName)
+	if err != nil {
+		log.Println(err)
+	}
+
+	filePath := fmt.Sprintf("fw_version/%s.hex", versionName)
+	if err := UploadFileToS3(f, filePath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Error on uploading file to S3",
+			"error":   err,
+		})
+		return
+	}
+
+	if _, err := db.Exec("INSERT INTO fw_file (version, file_name, file_url, uploaded_date) VALUES (?, ?, ?, NOW())", versionName, fileHeader.Filename, filePath); err != nil {
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Error on inserting database",
+				"error":   err,
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{})
+
+}
+
+func UploadFileToS3(file *os.File, filePath string) error {
 
 	ss, err := session.NewSession()
 	if err != nil {
@@ -349,7 +437,7 @@ func UploadFileToS3(file *os.File, fileName string) error {
 	uploadResult, err := svc.PutObject(&s3.PutObjectInput{
 		Body:          fileBytes,
 		Bucket:        aws.String(awsConfig.Bucket),
-		Key:           aws.String(fmt.Sprintf("/userProfile/%s", fileName)),
+		Key:           aws.String(filePath),
 		ContentLength: aws.Int64(size),
 		ContentType:   aws.String(fileType),
 		ACL:           aws.String("public-read"),
