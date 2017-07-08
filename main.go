@@ -17,6 +17,8 @@ import (
 
 	"database/sql"
 
+	"mime/multipart"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awsutil"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -57,8 +59,8 @@ type AwsConfiguration struct {
 type FwFile struct {
 	ID           int64
 	Version      string
-	FileName     string
-	FileURL      string
+	FileAURL     string
+	FIleBURL     string
 	UploadedDate time.Time
 }
 
@@ -338,23 +340,27 @@ func UploadKidAvatar(c *gin.Context) {
 }
 
 func UploadFWFile(c *gin.Context) {
-	file, fileHeader, err := c.Request.FormFile("upload")
+	fileA, _, err := c.Request.FormFile("fileA")
 	if err != nil {
+		fmt.Println(err)
 		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "upload parameter is required",
+			"message": "File A parameter is required",
 			"error":   err,
 		})
 		return
 	}
 
+	fileB, _, err := c.Request.FormFile("fileB")
 	if err != nil {
-		fmt.Printf("err opening file: %s", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "File B parameter is required",
+			"error":   err,
+		})
+		return
 	}
 
 	if os.MkdirAll("./tmp", 0755) != nil {
-
 		panic("Unable to create directory for tagfile!")
-
 	}
 
 	versionName := c.Request.FormValue("versionName")
@@ -385,24 +391,17 @@ func UploadFWFile(c *gin.Context) {
 		return
 	}
 
-	fileName := fmt.Sprintf("./tmp/%s.%s", versionName, "hex")
-	out, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0755)
+	localFileA, localFileAPath, err := getFilePath(versionName, "A", fileA)
 	if err != nil {
-		log.Println(err)
-	}
-	defer out.Close()
-	_, err = io.Copy(out, file)
-	if err != nil {
-		log.Println(err)
+		log.Panic(err)
 	}
 
-	f, err := os.Open(fileName)
+	localFileB, localFileBPath, err := getFilePath(versionName, "B", fileB)
 	if err != nil {
-		log.Println(err)
+		log.Panic(err)
 	}
 
-	filePath := fmt.Sprintf("fw_version/%s.hex", versionName)
-	if err := UploadFileToS3(f, filePath); err != nil {
+	if err := UploadFileToS3(localFileA, localFileAPath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "Error on uploading file to S3",
 			"error":   err,
@@ -410,7 +409,15 @@ func UploadFWFile(c *gin.Context) {
 		return
 	}
 
-	if _, err := db.Exec("INSERT INTO fw_file (version, file_name, file_url, uploaded_date) VALUES (?, ?, ?, NOW())", versionName, fileHeader.Filename, filePath); err != nil {
+	if err := UploadFileToS3(localFileB, localFileBPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Error on uploading file to S3",
+			"error":   err,
+		})
+		return
+	}
+
+	if _, err := db.Exec("INSERT INTO fw_file (version, file_a_url, file_b_url, uploaded_date) VALUES (?, ?, ?, NOW())", versionName, localFileAPath, localFileBPath); err != nil {
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"message": "Error on inserting database",
@@ -422,6 +429,28 @@ func UploadFWFile(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{})
 
+}
+
+func getFilePath(version, name string, file multipart.File) (*os.File, string, error) {
+	fileName := fmt.Sprintf("./tmp/%s%s.%s", version, name, "hex")
+	out, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0755)
+	if err != nil {
+		return nil, "", err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, file)
+	if err != nil {
+		return nil, "", err
+	}
+
+	f, err := os.Open(fileName)
+	if err != nil {
+		return nil, "", err
+	}
+
+	filePath := fmt.Sprintf("fw_version/%s%s.hex", version, name)
+
+	return f, filePath, nil
 }
 
 func UploadFileToS3(file *os.File, filePath string) error {
