@@ -1,4 +1,4 @@
-FROM golang:1.8
+FROM golang:1.8.3
 RUN mkdir -p /go/src/github.com/kidsdynamic/childrenlab_avatar
 ADD . /go/src/github.com/kidsdynamic/childrenlab_avatar/
 WORKDIR /go/src/github.com/kidsdynamic/childrenlab_avatar

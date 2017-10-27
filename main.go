@@ -28,12 +28,13 @@ import (
 )
 
 type Kid struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	DateCreated time.Time `json:"dateCreated" db:"date_created"`
-	MacID       string    `json:"macId" db:"mac_id"`
-	Profile     string    `json:"profile"`
-	ParentID    int64     `json:"-"  db:"parent_id"`
+	ID              int64     `json:"id"`
+	Name            string    `json:"name"`
+	DateCreated     time.Time `json:"dateCreated" db:"date_created"`
+	MacID           string    `json:"macId" db:"mac_id"`
+	Profile         string    `json:"profile"`
+	FirmwareVersion string    `json:"firmware_version" db:"firmware_version"`
+	ParentID        int64     `json:"-"  db:"parent_id"`
 }
 
 type User struct {
