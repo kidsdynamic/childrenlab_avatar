@@ -32,8 +32,8 @@ type Kid struct {
 	Name            string    `json:"name"`
 	DateCreated     time.Time `json:"dateCreated" db:"date_created"`
 	MacID           string    `json:"macId" db:"mac_id"`
-	Profile         string    `json:"profile"`
-	FirmwareVersion string    `json:"firmware_version" db:"firmware_version"`
+	Profile         *string   `json:"profile"`
+	FirmwareVersion *string   `json:"-" db:"firmware_version"`
 	ParentID        int64     `json:"-"  db:"parent_id"`
 }
 
@@ -162,11 +162,12 @@ func main() {
 		r.POST("/v1/user/avatar/uploadKid", UploadKidAvatar)
 		r.POST("/v1/admin/fwFile", UploadFWFile)
 
-		if c.Bool("debug") {
-			return r.Run(":8112")
-		} else {
-			return r.RunTLS(":8112", ".ssh/childrenlab.chained.crt", ".ssh/childrenlab.com.key")
-		}
+		return r.Run(":8112")
+		/*
+			if c.Bool("debug") {
+			} else {
+				return r.RunTLS(":8112", ".ssh/childrenlab.chained.crt", ".ssh/childrenlab.com.key")
+			}*/
 
 	}
 
