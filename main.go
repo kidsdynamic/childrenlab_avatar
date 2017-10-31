@@ -162,12 +162,12 @@ func main() {
 		r.POST("/v1/user/avatar/uploadKid", UploadKidAvatar)
 		r.POST("/v1/admin/fwFile", UploadFWFile)
 
-		return r.Run(":8112")
-		/*
-			if c.Bool("debug") {
-			} else {
-				return r.RunTLS(":8112", ".ssh/childrenlab.chained.crt", ".ssh/childrenlab.com.key")
-			}*/
+		if c.Bool("debug") {
+			return r.Run(":8112")
+
+		} else {
+			return r.RunTLS(":8112", ".ssh/childrenlab.chained.crt", ".ssh/childrenlab.com.key")
+		}
 
 	}
 
