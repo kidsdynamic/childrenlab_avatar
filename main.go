@@ -34,27 +34,40 @@ type Kid struct {
 	MacID           string    `json:"macId" db:"mac_id"`
 	Profile         *string   `json:"profile"`
 	FirmwareVersion *string   `json:"-" db:"firmware_version"`
-	ParentID        int64     `json:"-"  db:"parent_id"`
+	ParentID        int64     `json:"-" db:"parent_id"`
+	Parent          User      `json:"parent"`
 }
 
 type User struct {
-	ID          int64     `json:"id"`
-	Email       string    `json:"email"`
-	FirstName   string    `json:"firstName" db:"first_name"`
-	LastName    string    `json:"lastName" db:"last_name"`
-	LastUpdated time.Time `json:"lastUpdate" db:"last_updated"`
-	DateCreated time.Time `json:"dateCreated" db:"date_created"`
-	ZipCode     string    `json:"zipCode" db:"zip_code"`
-	PhoneNumber string    `json:"phoneNumber" db:"phone_number"`
-	Profile     string    `json:"profile"`
-	Language    string    `json:"language"`
+	ID                       int64     `json:"id" db:"id"`
+	Password                 string    `json:"-"`
+	Email                    string    `json:"email" db:"email"`
+	FirstName                string    `json:"firstName" db:"first_name"`
+	LastName                 string    `json:"lastName" db:"last_name"`
+	LastUpdated              time.Time `json:"lastUpdate" db:"last_updated"`
+	DateCreated              time.Time `json:"dateCreated" db:"date_created"`
+	ZipCode                  string    `json:"zipCode" db:"zip_code"`
+	PhoneNumber              string    `json:"phoneNumber" db:"phone_number"`
+	Profile                  string    `json:"profile"`
+	Language                 string    `json:"language"`
+	RegistrationID           string    `json:"-" db:"registration_id"`
+	AndroidRegistrationToken string    `json:"-" db:"android_registration_token"`
+	Role                     Role      `json:"-"`
+	RoleID                   int64     `json:"-" db:"role_id"`
+	ResetPasswordToken       string    `json:"-" db:"reset_password_token"`
+	SignUpIP                 string    `json:"-" db:"sign_up_ip"`
+	SignUpCountryCode        string    `json:"country" db:"sign_up_country_code"`
+}
+
+type Role struct {
+	ID        int64  `json:"-"`
+	Authority string `json:"authority"`
 }
 
 type AwsConfiguration struct {
-	Bucket          string
-	Region          string
-	AccessKey       string
-	SecretAccessKey string
+	Bucket    string
+	Region    string
+	AccessKey string
 }
 
 type FwFile struct {
@@ -139,10 +152,9 @@ func main() {
 		c.Set("aws_bucket", c.String("aws_bucket"))
 
 		awsConfig = AwsConfiguration{
-			Bucket:          c.String("aws_bucket"),
-			Region:          c.String("aws_region"),
-			AccessKey:       c.String("aws_access_key"),
-			SecretAccessKey: c.String("aws_secret_acess_key"),
+			Bucket:    c.String("aws_bucket"),
+			Region:    c.String("aws_region"),
+			AccessKey: c.String("aws_access_key"),
 		}
 
 		fmt.Printf("Database: %v", database.Database)
@@ -162,12 +174,12 @@ func main() {
 		r.POST("/v1/user/avatar/uploadKid", UploadKidAvatar)
 		r.POST("/v1/admin/fwFile", UploadFWFile)
 
-		if c.Bool("debug") {
-			return r.Run(":8112")
-
-		} else {
-			return r.RunTLS(":8112", ".ssh/childrenlab.chained.crt", ".ssh/childrenlab.com.key")
-		}
+		return r.Run(":8112")
+		/*
+			if c.Bool("debug") {
+			} else {
+				return r.RunTLS(":8112", ".ssh/childrenlab.chained.crt", ".ssh/childrenlab.com.key")
+			}*/
 
 	}
 
@@ -290,9 +302,7 @@ func UploadKidAvatar(c *gin.Context) {
 	}
 
 	var kid Kid
-	err = db.Get(&kid, "SELECT * FROM kids WHERE parent_id = ? AND id = ?", userID, kidID)
-
-	if err != nil {
+	if err = db.Get(&kid, "SELECT * FROM kids WHERE parent_id = ? AND id = ?", userID, kidID); err != nil {
 		log.Printf("Error on get kid from database. Error: %#v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "Error on Get kid from database",
@@ -300,6 +310,17 @@ func UploadKidAvatar(c *gin.Context) {
 		})
 		return
 	}
+
+	var user User
+	if err = db.Get(&user, "SELECT * FROM user WHERE id = ?", kid.ParentID); err != nil {
+		log.Printf("Error on get kid from database. Error: %#v", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Error on Get kid from database",
+			"error":   err,
+		})
+		return
+	}
+	kid.Parent = user
 
 	fileName := fmt.Sprintf("kid_avatar_%d.jpg", kid.ID)
 	if err != nil {
@@ -326,6 +347,7 @@ func UploadKidAvatar(c *gin.Context) {
 	if err != nil {
 		log.Println(err)
 	}
+
 	if UploadFileToS3(f, fmt.Sprintf("/userProfile/%s", fileName)) == nil {
 
 		_, err := db.Exec("UPDATE kids SET profile = ? WHERE id = ?", fileName, kidID)
@@ -333,6 +355,8 @@ func UploadKidAvatar(c *gin.Context) {
 		if err != nil {
 			log.Printf("Error on update profile. Error: %#v", err)
 		}
+
+		kid.Profile = &fileName
 
 		c.JSON(http.StatusOK, gin.H{
 			"kid": kid,
