@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
+	"strconv"
 
 	gin "gopkg.in/gin-gonic/gin.v1"
 
@@ -13,13 +15,12 @@ import (
 	"io"
 	"time"
 
-	"strconv"
-
 	"database/sql"
 
 	"mime/multipart"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/awsutil"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -213,7 +214,6 @@ func UploadAvatar(c *gin.Context) {
 		return
 	}
 	file, _, err := c.Request.FormFile("upload")
-	fileName := fmt.Sprintf("avatar_%d.jpg", userID)
 	if err != nil {
 		log.Printf("Error on save avatar: %#v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -221,6 +221,24 @@ func UploadAvatar(c *gin.Context) {
 			"error":   err,
 		})
 		return
+	}
+
+	db := database.NewDatabase()
+	defer db.Close()
+	var user User
+	if err := db.Get(&user, "SELECT id, email, first_name, last_name, last_updated, date_created, zip_code, phone_number, profile, language FROM user WHERE id = ? LIMIT 1", userID); err != nil {
+		fmt.Printf("%#v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Something wrong when getting user",
+			"error":   err,
+		})
+		return
+	}
+	oldFileName := user.Profile
+	fileName := oldFileName
+
+	for fileName == oldFileName {
+		fileName = fmt.Sprintf("avatar_%d-%d.jpg", userID, randomNumber())
 	}
 
 	if os.MkdirAll("./tmp", 0755) != nil {
@@ -243,9 +261,6 @@ func UploadAvatar(c *gin.Context) {
 	}
 
 	if err = UploadFileToS3(f, fmt.Sprintf("/userProfile/%s", fileName)); err == nil {
-		db := database.NewDatabase()
-		defer db.Close()
-
 		if _, err := db.Exec("UPDATE user SET profile = ? WHERE id = ?", fileName, userID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"message": "Something wrong when updating profile for the user",
@@ -254,19 +269,27 @@ func UploadAvatar(c *gin.Context) {
 			return
 		}
 
-		var user User
-		if err := db.Get(&user, "SELECT id, email, first_name, last_name, last_updated, date_created, zip_code, phone_number, profile, language FROM user WHERE id = ? LIMIT 1", userID); err != nil {
-			fmt.Printf("%#v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"message": "Something wrong when getting user",
-				"error":   err,
-			})
-			return
-		}
+		user.Profile = fileName
 
 		c.JSON(http.StatusOK, gin.H{
 			"user": user,
 		})
+
+		if len(oldFileName) > 0 {
+			if err := removeFileFromS3(fmt.Sprintf("/userProfile/%s", oldFileName)); err != nil {
+				if aerr, ok := err.(awserr.Error); ok {
+					switch aerr.Code() {
+					default:
+						fmt.Println(aerr.Error())
+					}
+				} else {
+					// Print the error, cast err to awserr.Error to get the Code and
+					// Message from an error.
+					fmt.Println(err.Error())
+				}
+				return
+			}
+		}
 	} else {
 		fmt.Printf("Error on upload user image to S3. Error: %#v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -277,6 +300,7 @@ func UploadAvatar(c *gin.Context) {
 }
 
 func UploadKidAvatar(c *gin.Context) {
+
 	userID := getUserID(c)
 	file, _, err := c.Request.FormFile("upload")
 
@@ -322,7 +346,12 @@ func UploadKidAvatar(c *gin.Context) {
 	}
 	kid.Parent = user
 
-	fileName := fmt.Sprintf("kid_avatar_%d.jpg", kid.ID)
+	oldFileName := *kid.Profile
+	fileName := oldFileName
+
+	for fileName == oldFileName {
+		fileName = fmt.Sprintf("kid_avatar_%d-%d.jpg", kidID, randomNumber())
+	}
 	if err != nil {
 		fmt.Printf("err opening file: %s", err)
 	}
@@ -356,11 +385,30 @@ func UploadKidAvatar(c *gin.Context) {
 			log.Printf("Error on update profile. Error: %#v", err)
 		}
 
+		oldFilename := kid.Profile
+
 		kid.Profile = &fileName
 
 		c.JSON(http.StatusOK, gin.H{
 			"kid": kid,
 		})
+
+		if len(*oldFilename) > 0 {
+			if err := removeFileFromS3(fmt.Sprintf("/userProfile/%s", *oldFilename)); err != nil {
+				if aerr, ok := err.(awserr.Error); ok {
+					switch aerr.Code() {
+					default:
+						fmt.Println(aerr.Error())
+					}
+				} else {
+					// Print the error, cast err to awserr.Error to get the Code and
+					// Message from an error.
+					fmt.Println(err.Error())
+				}
+				return
+			}
+		}
+
 	}
 
 }
@@ -368,7 +416,6 @@ func UploadKidAvatar(c *gin.Context) {
 func UploadFWFile(c *gin.Context) {
 	fileA, _, err := c.Request.FormFile("fileA")
 	if err != nil {
-		fmt.Println(err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "File A parameter is required",
 			"error":   err,
@@ -516,4 +563,34 @@ func UploadFileToS3(file *os.File, filePath string) error {
 
 	return nil
 
+}
+
+func removeFileFromS3(fileName string) error {
+	ss, err := session.NewSession()
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = ss.Config.Credentials.Get()
+	if err != nil {
+		return err
+	}
+	svc := s3.New(session.New(&aws.Config{}))
+	input := &s3.DeleteObjectInput{
+		Bucket: aws.String(awsConfig.Bucket),
+		Key:    aws.String(fileName),
+	}
+
+	_, err = svc.DeleteObject(input)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func randomNumber() int {
+	s1 := rand.NewSource(time.Now().UnixNano())
+	r1 := rand.New(s1)
+
+	return r1.Intn(9999)
 }
